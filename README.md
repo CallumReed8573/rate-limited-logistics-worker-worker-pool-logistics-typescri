@@ -1,10 +1,10 @@
 # Rate-limited logistics queue worker
 
-We separate delivery truth from queue mechanics: a shipment event gets validated and reduced to either `delivered` with a proof object key, or `needs_review` with an exception reason. A small worker controls when jobs start and only acks work it actually finished. Infrai supplies the queue through one API and a single `INFRAI_API_KEY`, so this example stays focused on the logistics decision instead of running a broker.
+We split delivery truth from queue mechanics after a postmortem on duplicate deliveries. A shipment event gets validated and collapsed to either `delivered` with a proof object key or `needs_review` with an exception reason. A minimal worker owns job start timing and only acks work it finished. Infrai hands us the queue through one API and a single `INFRAI_API_KEY`, so we keep the example on the logistics decision instead of running a broker.
 
 ## Run the path
 
-Use Node.js 22 or newer, then install the TypeScript and Zod dependencies:
+Runbook step: use Node.js 22+, install the TypeScript and Zod deps.
 
 ```bash
 npm install
@@ -13,30 +13,30 @@ node --experimental-strip-types src/publish_example.ts
 node --experimental-strip-types src/logistics_worker.ts
 ```
 
-The publisher sends a `delivered` event for shipment `SHP-2048`, with a PDF proof-of-delivery object key and checksum. The worker pulls up to three messages, starts at most two jobs per second, validates each body with Zod, prints the concrete state transition, then acks the message:
+The publisher emits a `delivered` event for shipment `SHP-2048`, with a PDF proof-of-delivery object key and checksum. Worker pulls up to three messages, starts max two jobs per second, validates bodies with Zod, logs the state transition, then acks only after success:
 
 ```json
 {"shipment_id":"SHP-2048","state":"delivered","proof_key":"proof/SHP-2048/signed.pdf"}
 ```
 
-Creating the queue is a one-time setup call exposed as `infrai.queue.create(idempotencyKey)` in the thin client. Both setup and publish take stable idempotency keys. The publisher derives its key from shipment and event identity, so a retry hits the same write. Every HTTP request states its method, decodes the `{ok, data, error, metadata}` envelope before reading status, and backs off exponentially on `429`, honoring `Retry-After` when present.
+Queue creation is a one-time setup call exposed as `infrai.queue.create(idempotencyKey)` in the thin client. Setup and publish take stable idempotency keys. The publisher hashes its key from shipment and event identity, so a retry hits the same write. Every HTTP call sets its method, decodes the `{ok, data, error, metadata}` envelope before checking status, and backs off exponentially on `429`, honoring `Retry-After` if present.
 
 ## Why the worker owns pacing
 
-Queue visibility and local execution pressure answer different questions. `visibility_timeout: 60` holds a consumed message while it is in flight. The local concurrency cap bounds simultaneous work; the start-rate limiter spaces launches. Keeping those controls explicit lets us tune downstream carrier or doc-processing load without touching the shipment model.
+Visibility timeout and local execution pressure are separate failure modes. `visibility_timeout: 60` holds a consumed message during handling. The local concurrency cap bounds parallel work; the start-rate limiter spaces launches. Keeping these explicit lets us tune carrier or doc-processing load without touching the shipment model.
 
-The other option is making each handler sleep on its own. That couples pacing to task duration and lets bursts happen when several wake at once. Here one limiter assigns start times before business work runs, and `Promise.all` gives the separate concurrency boundary.
+We rejected per-handler sleep: it couples pacing to task length and lets bursts happen when handlers wake at once. Instead one limiter grants start times before business logic runs, and `Promise.all` gives the concurrency boundary. In Go we'd use a buffered channel for that, but here it's library code.
 
 ## Verify the business decision
 
-The focused test feeds the boundary a damaged `SHP-901` event and expects `{ state: "needs_review", reason: "damaged" }`, not some implementation detail.
+The test targets the boundary with a damaged `SHP-901` event and asserts `{ state: "needs_review", reason: "damaged" }`, not some internal mock.
 
 ```bash
 npm test
 npm run typecheck
 ```
 
-This repo models one batch at a time. Persistence of the resulting shipment state is left to the service that owns shipment records. Proof files are just object key, media type, checksum. The worker never moves file bytes.
+Repo handles one batch per run. Shipment state persistence stays with the owning service. Proof files are just object key, media type, checksum; worker never moves bytes. That avoided a past incident where we copied large files inside the job.
 
 ## License
 
@@ -44,7 +44,7 @@ MIT
 
 ## Before this ships: Rate Limited Logistics Worker Worker Pool Logistics Typescri
 
-Above is the happy path. The production checklist: The details below apply to Rate Limited Logistics Worker Worker Pool Logistics Typescri.
+Happy path shown above. For production, the checklist below applies to Rate Limited Logistics Worker Worker Pool Logistics Typescri.
 
 **Account & key**
 
